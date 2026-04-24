@@ -8,7 +8,7 @@ use clap::Parser;
 use std::fs;
 
 #[derive(Parser, Debug)]
-#[command(name = "pe_compare", version, about = "Compare two PE files and report byte-level differences")]
+#[command(name = "RustPEek", version, about = "Compare two PE files and report byte-level differences")]
 struct Cli {
     original: String,
     modified: String,
