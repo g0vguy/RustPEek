@@ -67,24 +67,13 @@ fn run_tui(
     entries: &[DiffEntry],
 ) -> Result<()> {
     let mut copied_at: Option<Instant> = None;
+    let mut search = String::new();
+    let mut search_mode = false;
+
     let header_cells = ["RVA", "VA", "File Offset", "Original Bytes", "Modified Bytes", "Section"]
         .iter()
         .map(|h| Cell::from(*h).style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
     let header = Row::new(header_cells).height(1).bottom_margin(0);
-
-    let rows: Vec<Row> = entries
-        .iter()
-        .map(|e| {
-            Row::new([
-                Cell::from(format!("{:08X}", e.rva)).style(Style::default().fg(Color::Yellow)),
-                Cell::from(format!("{:012X}", e.va)).style(Style::default().fg(Color::Yellow)),
-                Cell::from(format!("{:08X}", e.file_offset)).style(Style::default().fg(Color::White)),
-                Cell::from(fmt_bytes(&e.original_bytes)).style(Style::default().fg(Color::Red)),
-                Cell::from(fmt_bytes(&e.modified_bytes)).style(Style::default().fg(Color::Green)),
-                Cell::from(fmt_section(e)).style(Style::default().fg(Color::Magenta)),
-            ])
-        })
-        .collect();
 
     let widths = [
         Constraint::Length(10),
@@ -96,6 +85,38 @@ fn run_tui(
     ];
 
     loop {
+        let needle = search.to_ascii_lowercase();
+        let visible: Vec<&DiffEntry> = entries
+            .iter()
+            .filter(|e| {
+                if needle.is_empty() {
+                    return true;
+                }
+                let sec = fmt_section(e).to_ascii_lowercase();
+                let orig_hex = fmt_bytes(&e.original_bytes).to_ascii_lowercase();
+                let mod_hex  = fmt_bytes(&e.modified_bytes).to_ascii_lowercase();
+                sec.contains(&needle) || orig_hex.contains(&needle) || mod_hex.contains(&needle)
+            })
+            .collect();
+
+        let rows: Vec<Row> = visible
+            .iter()
+            .map(|e| {
+                Row::new([
+                    Cell::from(format!("{:08X}", e.rva)).style(Style::default().fg(Color::Yellow)),
+                    Cell::from(format!("{:012X}", e.va)).style(Style::default().fg(Color::Yellow)),
+                    Cell::from(format!("{:08X}", e.file_offset)).style(Style::default().fg(Color::White)),
+                    Cell::from(fmt_bytes(&e.original_bytes)).style(Style::default().fg(Color::Red)),
+                    Cell::from(fmt_bytes(&e.modified_bytes)).style(Style::default().fg(Color::Green)),
+                    Cell::from(fmt_section(e)).style(Style::default().fg(Color::Magenta)),
+                ])
+            })
+            .collect();
+
+        if state.selected().map(|i| i >= visible.len()).unwrap_or(false) {
+            state.select(if visible.is_empty() { None } else { Some(visible.len().saturating_sub(1)) });
+        }
+
         terminal.draw(|f| {
             let area = f.area();
             let chunks = Layout::default()
@@ -103,45 +124,59 @@ fn run_tui(
                 .constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(1)])
                 .split(area);
 
-            let title = Paragraph::new(vec![
-                Line::from(vec![
-                    Span::styled("  Original : ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(orig_path, Style::default().fg(Color::White)),
-                    Span::styled("   Modified : ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(mod_path, Style::default().fg(Color::White)),
-                    Span::styled(
-                        format!("   Diffs: {}", entries.len()),
-                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-                    ),
-                ]),
-            ])
+            let filter_info = if !needle.is_empty() {
+                format!("   Filter: '{}' ({}/{})", search, visible.len(), entries.len())
+            } else {
+                format!("   Diffs: {}", entries.len())
+            };
+
+            let title = Paragraph::new(Line::from(vec![
+                Span::styled("  Original : ", Style::default().fg(Color::DarkGray)),
+                Span::styled(orig_path, Style::default().fg(Color::White)),
+                Span::styled("   Modified : ", Style::default().fg(Color::DarkGray)),
+                Span::styled(mod_path, Style::default().fg(Color::White)),
+                Span::styled(filter_info, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            ]))
             .block(Block::default().borders(Borders::ALL).title(Span::styled(
                 " RustPEek ",
                 Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
             )));
 
-            let table = Table::new(rows.clone(), widths)
+            let table = Table::new(rows, widths)
                 .header(header.clone())
                 .block(Block::default().borders(Borders::ALL).title(" Diff Results "))
-                .highlight_style(
-                    Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD),
-                )
+                .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD))
                 .highlight_symbol("▶ ");
 
             let copied_visible = copied_at.map(|t| t.elapsed() < Duration::from_secs(2)).unwrap_or(false);
-            let help = Paragraph::new(Line::from(vec![
-                Span::styled(" ↑↓ ", Style::default().fg(Color::Cyan)),
-                Span::raw("navigate   "),
-                Span::styled(" y ", Style::default().fg(Color::Cyan)),
-                Span::raw("copy row   "),
-                Span::styled(" q / Esc ", Style::default().fg(Color::Cyan)),
-                Span::raw("quit"),
-                if copied_visible {
-                    Span::styled("   ✓ Copied!", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
-                } else {
-                    Span::raw("")
-                },
-            ]));
+
+            let help = if search_mode {
+                Paragraph::new(Line::from(vec![
+                    Span::styled(" / ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled(&search, Style::default().fg(Color::White)),
+                    Span::styled("█", Style::default().fg(Color::Yellow)),
+                    Span::styled("   Enter ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("confirm   "),
+                    Span::styled(" Esc ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("clear"),
+                ]))
+            } else {
+                Paragraph::new(Line::from(vec![
+                    Span::styled(" ↑↓ ", Style::default().fg(Color::Cyan)),
+                    Span::raw("navigate   "),
+                    Span::styled(" / ", Style::default().fg(Color::Cyan)),
+                    Span::raw("search   "),
+                    Span::styled(" y ", Style::default().fg(Color::Cyan)),
+                    Span::raw("copy row   "),
+                    Span::styled(" q / Esc ", Style::default().fg(Color::Cyan)),
+                    Span::raw("quit"),
+                    if copied_visible {
+                        Span::styled("   ✓ Copied!", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+                    } else {
+                        Span::raw("")
+                    },
+                ]))
+            };
 
             f.render_widget(title, chunks[0]);
             f.render_stateful_widget(table, chunks[1], state);
@@ -152,10 +187,30 @@ fn run_tui(
             if key.kind != KeyEventKind::Press {
                 continue;
             }
+            if search_mode {
+                match key.code {
+                    KeyCode::Esc => {
+                        search.clear();
+                        search_mode = false;
+                        state.select(if entries.is_empty() { None } else { Some(0) });
+                    }
+                    KeyCode::Enter => {
+                        search_mode = false;
+                    }
+                    KeyCode::Backspace => { search.pop(); }
+                    KeyCode::Char(c) => { search.push(c); }
+                    _ => {}
+                }
+                continue;
+            }
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => break,
+                KeyCode::Char('/') => {
+                    search_mode = true;
+                    state.select(if visible.is_empty() { None } else { Some(0) });
+                }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    let next = state.selected().map(|i| (i + 1).min(entries.len().saturating_sub(1))).unwrap_or(0);
+                    let next = state.selected().map(|i| (i + 1).min(visible.len().saturating_sub(1))).unwrap_or(0);
                     state.select(Some(next));
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
@@ -164,14 +219,16 @@ fn run_tui(
                 }
                 KeyCode::Home | KeyCode::Char('g') => state.select(Some(0)),
                 KeyCode::End | KeyCode::Char('G') => {
-                    state.select(Some(entries.len().saturating_sub(1)));
+                    state.select(Some(visible.len().saturating_sub(1)));
                 }
                 KeyCode::Char('y') => {
                     if let Some(i) = state.selected() {
-                        let text = entry_to_clipboard(&entries[i]);
-                        if let Ok(mut ctx) = cli_clipboard::ClipboardContext::new() {
-                            let _ = ctx.set_contents(text);
-                            copied_at = Some(Instant::now());
+                        if let Some(e) = visible.get(i) {
+                            let text = entry_to_clipboard(e);
+                            if let Ok(mut ctx) = cli_clipboard::ClipboardContext::new() {
+                                let _ = ctx.set_contents(text);
+                                copied_at = Some(Instant::now());
+                            }
                         }
                     }
                 }

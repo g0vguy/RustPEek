@@ -8,7 +8,7 @@ use clap::Parser;
 use std::fs;
 
 #[derive(Parser, Debug)]
-#[command(name = "pe_compare", version, about = "Compare two PE files and report byte-level differences")]
+#[command(name = "RustPEek", version, about = "Compare two PE files and report byte-level differences")]
 struct Cli {
     original: String,
     modified: String,
@@ -24,6 +24,12 @@ struct Cli {
 
     #[arg(long, short = 'b')]
     min_bytes: Option<usize>,
+
+    #[arg(long, short = 'c', default_value = "0")]
+    context: usize,
+
+    #[arg(long, short = 'i', num_args = 1..)]
+    ignore_section: Vec<String>,
 }
 
 fn main() -> Result<()> {
@@ -40,10 +46,13 @@ fn main() -> Result<()> {
         );
     }
 
-    let mut entries = differ::compare(&orig, &modif);
+    let mut entries = differ::compare(&orig, &modif, cli.context);
 
     if let Some(ref sec) = cli.section {
         entries.retain(|e| e.section_name.eq_ignore_ascii_case(sec));
+    }
+    for ignored in &cli.ignore_section {
+        entries.retain(|e| !e.section_name.eq_ignore_ascii_case(ignored));
     }
     if let Some(min) = cli.min_bytes {
         entries.retain(|e| e.original_bytes.len() >= min);

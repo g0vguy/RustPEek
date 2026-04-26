@@ -1,4 +1,4 @@
-# RustPEek
+# RustPEek v0.2.0
 
 A CLI tool that compares two Windows PE files byte-by-byte and presents the diff in an interactive terminal UI. Each changed region is shown with its RVA, VA, file offset, raw bytes, and section name.
 
@@ -29,6 +29,8 @@ RustPEek <original> <modified> [OPTIONS]
 | `-o, --output <file>` | Write report to a file instead of opening the TUI |
 | `-s, --section <name>` | Filter to a specific section, e.g. `.text` |
 | `-b, --min-bytes <n>` | Only show diffs with ≥ N changed bytes |
+| `-c, --context <n>` | Show N bytes of context before/after each diff region |
+| `-i, --ignore-section <name>` | Exclude a section (repeatable, e.g. `.rsrc`) |
 
 ---
 
@@ -51,7 +53,7 @@ RustPEek original.exe patched.exe
 │  0144CA10    00018144CA10     0144BE10       74 05             90 90        │
 │  00A3F120    000180A3F120     00A3E520       8B 45 08 83 C0    B8 01 00 ... │
 └────────────────────────────────────────────────────────────────────────────┘
- ↑↓  navigate    y  copy row    q / Esc  quit
+ ↑↓  navigate    /  search    y  copy row    q / Esc  quit
 ```
 
 ### Keybinds
@@ -62,8 +64,11 @@ RustPEek original.exe patched.exe
 | `↓` / `j` | Move down |
 | `g` / `Home` | Jump to first row |
 | `G` / `End` | Jump to last row |
+| `/` | Enter search mode — filter by section name or byte pattern |
 | `y` | Copy selected row to clipboard |
 | `q` / `Esc` | Quit |
+
+Pressing `/` opens an inline search bar at the bottom. The table filters live as you type, matching against section name, original bytes, and modified bytes. The header shows `Filter: 'query' (n/total)`. `Enter` confirms and returns to normal navigation. `Esc` clears the filter.
 
 Pressing `y` copies the selected row as tab-separated values — pastes cleanly into Excel, Notepad, or IDA.
 
@@ -86,7 +91,7 @@ RustPEek orig.exe patched.exe --output report.txt
 
 ---
 
-## Filtering
+## Filtering & Context
 
 ```bash
 # Only diffs inside .text
@@ -95,8 +100,14 @@ RustPEek orig.exe patched.exe --section .text
 # Only runs of 4+ changed bytes
 RustPEek orig.exe patched.exe --min-bytes 4
 
-# Combine both
-RustPEek orig.exe patched.exe --section .text --min-bytes 4
+# Show 8 bytes of context around each diff
+RustPEek orig.exe patched.exe --context 8
+
+# Exclude noisy sections
+RustPEek orig.exe patched.exe --ignore-section .rsrc --ignore-section .reloc
+
+# Combine
+RustPEek orig.exe patched.exe --section .text --context 4 --ignore-section .reloc
 ```
 
 ---
@@ -113,6 +124,8 @@ RustPEek orig.exe patched.exe --section .text --min-bytes 4
 | Section | 1-based index and name | `1\|.text` |
 
 Addresses outside any known section are shown as `?|unknown`.
+
+When `--context <n>` is used, the bytes shown include N bytes before and after the changed region. The changed bytes sit in the middle.
 
 ---
 
@@ -134,13 +147,19 @@ src/
 
 ---
 
-## TODO
-- [ ] `--context <n>` — show N bytes before/after each diff region
-- [ ] `--ignore-section <name>` — exclude noisy sections like `.rsrc` or `.reloc`
+## Roadmap
+
+### Diff Quality
+- ~~`--context <n>` — show N bytes before/after each diff region~~
+- ~~`--ignore-section <name>` — exclude noisy sections like `.rsrc` or `.reloc`~~
 - [ ] Patch pattern detection — automatically label common patterns (`NOP sled`, `JMP patch`, `ret stub`)
+
+### TUI
 - [ ] Hex dump detail pane — split view showing a hex dump of the selected region with changed bytes highlighted inline
-- [ ] `/` search — filter rows by section name or byte pattern without leaving the TUI
+- ~~`/` search — filter rows by section name or byte pattern without leaving the TUI~~
 - [ ] `e` export — save the current filtered view to a file from inside the TUI
+
+### Analysis
 - [ ] Entropy delta per diff region — flags whether a patch looks like shellcode vs a simple NOP
 - [ ] PDB hint — if a PDB path is embedded in the PE, surface it so the user knows symbols are available
 - [ ] `--diff-only-headers` — compare PE headers only, skip section data

@@ -9,11 +9,13 @@ pub struct DiffEntry {
     pub file_offset: u64,
     pub original_bytes: Vec<u8>,
     pub modified_bytes: Vec<u8>,
+    pub context_before: usize,
+    pub context_after: usize,
     pub section_index: usize,
     pub section_name: String,
 }
 
-pub fn compare(orig: &PeInfo, modif: &PeInfo) -> Vec<DiffEntry> {
+pub fn compare(orig: &PeInfo, modif: &PeInfo, context: usize) -> Vec<DiffEntry> {
     let len = orig.raw_data.len().min(modif.raw_data.len());
 
     let diff_offsets: Vec<u64> = (0..len)
@@ -24,6 +26,8 @@ pub fn compare(orig: &PeInfo, modif: &PeInfo) -> Vec<DiffEntry> {
     group_runs(&diff_offsets)
         .into_iter()
         .filter_map(|(start, end)| {
+            let ctx_start = start.saturating_sub(context as u64);
+            let ctx_end = (end + context as u64).min(len as u64 - 1);
             let rva = file_offset_to_rva(start, &orig.sections)?;
             let va = rva_to_va(rva, orig.image_base);
             let (section_index, section_name) = section_for_rva(rva, &orig.sections);
@@ -31,8 +35,10 @@ pub fn compare(orig: &PeInfo, modif: &PeInfo) -> Vec<DiffEntry> {
                 rva,
                 va,
                 file_offset: start,
-                original_bytes: orig.raw_data[start as usize..=end as usize].to_vec(),
-                modified_bytes: modif.raw_data[start as usize..=end as usize].to_vec(),
+                original_bytes: orig.raw_data[ctx_start as usize..=ctx_end as usize].to_vec(),
+                modified_bytes: modif.raw_data[ctx_start as usize..=ctx_end as usize].to_vec(),
+                context_before: (start - ctx_start) as usize,
+                context_after: (ctx_end - end) as usize,
                 section_index,
                 section_name,
             })
