@@ -9,7 +9,7 @@ A CLI tool that compares two Windows PE files byte-by-byte and presents the diff
 **Prerequisites:** Rust 1.86+ via [rustup](https://rustup.rs)
 
 ```bash
-git clone <repo>
+git clone https://github.com/g0vguy/RustPEek
 cd RustPEek
 cargo build --release
 # binary: target/release/RustPEek.exe
