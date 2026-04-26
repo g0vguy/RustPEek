@@ -66,7 +66,10 @@ RustPEek original.exe patched.exe
 | `G` / `End` | Jump to last row |
 | `/` | Enter search mode — filter by section name or byte pattern |
 | `y` | Copy selected row to clipboard |
+| `e` | Export current view to a file |
 | `q` / `Esc` | Quit |
+
+Pressing `e` opens an inline filename prompt. Type a path and press `Enter` to write the file. The format is inferred from the extension — `.json`, `.csv`, or plain text for anything else. `Esc` cancels. A `✓ Exported` or `✗ Export failed` flash confirms the result.
 
 Pressing `/` opens an inline search bar at the bottom. The table filters live as you type, matching against section name, original bytes, and modified bytes. The header shows `Filter: 'query' (n/total)`. `Enter` confirms and returns to normal navigation. `Esc` clears the filter.
 
@@ -157,7 +160,7 @@ src/
 ### TUI
 - [ ] Hex dump detail pane — split view showing a hex dump of the selected region with changed bytes highlighted inline
 - ~~`/` search — filter rows by section name or byte pattern without leaving the TUI~~
-- [ ] `e` export — save the current filtered view to a file from inside the TUI
+- ~~`e` export — save the current filtered view to a file from inside the TUI~~
 
 ### Analysis
 - [ ] Entropy delta per diff region — flags whether a patch looks like shellcode vs a simple NOP

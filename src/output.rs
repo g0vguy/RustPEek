@@ -17,6 +17,13 @@ use ratatui::{
 use std::io;
 use std::time::{Duration, Instant};
 
+#[derive(PartialEq)]
+enum InputMode {
+    Normal,
+    Search,
+    Export,
+}
+
 pub fn fmt_bytes(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ")
 }
@@ -68,7 +75,9 @@ fn run_tui(
 ) -> Result<()> {
     let mut copied_at: Option<Instant> = None;
     let mut search = String::new();
-    let mut search_mode = false;
+    let mut export_path = String::new();
+    let mut mode = InputMode::Normal;
+    let mut status: Option<(String, Instant, bool)> = None; // (msg, time, success)
 
     let header_cells = ["RVA", "VA", "File Offset", "Original Bytes", "Modified Bytes", "Section"]
         .iter()
@@ -150,8 +159,8 @@ fn run_tui(
 
             let copied_visible = copied_at.map(|t| t.elapsed() < Duration::from_secs(2)).unwrap_or(false);
 
-            let help = if search_mode {
-                Paragraph::new(Line::from(vec![
+            let help = match mode {
+                InputMode::Search => Paragraph::new(Line::from(vec![
                     Span::styled(" / ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
                     Span::styled(&search, Style::default().fg(Color::White)),
                     Span::styled("█", Style::default().fg(Color::Yellow)),
@@ -159,23 +168,41 @@ fn run_tui(
                     Span::raw("confirm   "),
                     Span::styled(" Esc ", Style::default().fg(Color::DarkGray)),
                     Span::raw("clear"),
-                ]))
-            } else {
-                Paragraph::new(Line::from(vec![
-                    Span::styled(" ↑↓ ", Style::default().fg(Color::Cyan)),
-                    Span::raw("navigate   "),
-                    Span::styled(" / ", Style::default().fg(Color::Cyan)),
-                    Span::raw("search   "),
-                    Span::styled(" y ", Style::default().fg(Color::Cyan)),
-                    Span::raw("copy row   "),
-                    Span::styled(" q / Esc ", Style::default().fg(Color::Cyan)),
-                    Span::raw("quit"),
-                    if copied_visible {
+                ])),
+                InputMode::Export => Paragraph::new(Line::from(vec![
+                    Span::styled(" e ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled(&export_path, Style::default().fg(Color::White)),
+                    Span::styled("█", Style::default().fg(Color::Yellow)),
+                    Span::styled("   Enter ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("save   "),
+                    Span::styled(" Esc ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("cancel"),
+                ])),
+                InputMode::Normal => {
+                    let status_span = if let Some((ref msg, t, ok)) = status {
+                        if t.elapsed() < Duration::from_secs(2) {
+                            let color = if ok { Color::Green } else { Color::Red };
+                            Span::styled(format!("   {msg}"), Style::default().fg(color).add_modifier(Modifier::BOLD))
+                        } else { Span::raw("") }
+                    } else if copied_visible {
                         Span::styled("   ✓ Copied!", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
                     } else {
                         Span::raw("")
-                    },
-                ]))
+                    };
+                    Paragraph::new(Line::from(vec![
+                        Span::styled(" ↑↓ ", Style::default().fg(Color::Cyan)),
+                        Span::raw("navigate   "),
+                        Span::styled(" / ", Style::default().fg(Color::Cyan)),
+                        Span::raw("search   "),
+                        Span::styled(" y ", Style::default().fg(Color::Cyan)),
+                        Span::raw("copy   "),
+                        Span::styled(" e ", Style::default().fg(Color::Cyan)),
+                        Span::raw("export   "),
+                        Span::styled(" q / Esc ", Style::default().fg(Color::Cyan)),
+                        Span::raw("quit"),
+                        status_span,
+                    ]))
+                }
             };
 
             f.render_widget(title, chunks[0]);
@@ -187,56 +214,120 @@ fn run_tui(
             if key.kind != KeyEventKind::Press {
                 continue;
             }
-            if search_mode {
-                match key.code {
+            match mode {
+                InputMode::Search => match key.code {
                     KeyCode::Esc => {
                         search.clear();
-                        search_mode = false;
+                        mode = InputMode::Normal;
                         state.select(if entries.is_empty() { None } else { Some(0) });
                     }
-                    KeyCode::Enter => {
-                        search_mode = false;
-                    }
+                    KeyCode::Enter => { mode = InputMode::Normal; }
                     KeyCode::Backspace => { search.pop(); }
                     KeyCode::Char(c) => { search.push(c); }
                     _ => {}
-                }
-                continue;
-            }
-            match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => break,
-                KeyCode::Char('/') => {
-                    search_mode = true;
-                    state.select(if visible.is_empty() { None } else { Some(0) });
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    let next = state.selected().map(|i| (i + 1).min(visible.len().saturating_sub(1))).unwrap_or(0);
-                    state.select(Some(next));
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    let prev = state.selected().map(|i| i.saturating_sub(1)).unwrap_or(0);
-                    state.select(Some(prev));
-                }
-                KeyCode::Home | KeyCode::Char('g') => state.select(Some(0)),
-                KeyCode::End | KeyCode::Char('G') => {
-                    state.select(Some(visible.len().saturating_sub(1)));
-                }
-                KeyCode::Char('y') => {
-                    if let Some(i) = state.selected() {
-                        if let Some(e) = visible.get(i) {
-                            let text = entry_to_clipboard(e);
-                            if let Ok(mut ctx) = cli_clipboard::ClipboardContext::new() {
-                                let _ = ctx.set_contents(text);
-                                copied_at = Some(Instant::now());
+                },
+                InputMode::Export => match key.code {
+                    KeyCode::Esc => {
+                        export_path.clear();
+                        mode = InputMode::Normal;
+                    }
+                    KeyCode::Enter => {
+                        let path = export_path.trim().to_string();
+                        if !path.is_empty() {
+                            let owned: Vec<DiffEntry> = visible.iter().map(|e| (*e).clone()).collect();
+                            let content = if path.ends_with(".json") {
+                                to_json(&owned).ok()
+                            } else if path.ends_with(".csv") {
+                                Some(to_csv(&owned))
+                            } else {
+                                Some(render_plain(orig_path, mod_path, visible.as_slice()))
+                            };
+                            let (msg, ok) = match content.map(|c| std::fs::write(&path, c)) {
+                                Some(Ok(())) => (format!("✓ Exported to {path}"), true),
+                                _ => (format!("✗ Export failed: {path}"), false),
+                            };
+                            status = Some((msg, Instant::now(), ok));
+                        }
+                        export_path.clear();
+                        mode = InputMode::Normal;
+                    }
+                    KeyCode::Backspace => { export_path.pop(); }
+                    KeyCode::Char(c) => { export_path.push(c); }
+                    _ => {}
+                },
+                InputMode::Normal => match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => break,
+                    KeyCode::Char('/') => {
+                        mode = InputMode::Search;
+                        state.select(if visible.is_empty() { None } else { Some(0) });
+                    }
+                    KeyCode::Char('e') => {
+                        export_path.clear();
+                        mode = InputMode::Export;
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        let next = state.selected().map(|i| (i + 1).min(visible.len().saturating_sub(1))).unwrap_or(0);
+                        state.select(Some(next));
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        let prev = state.selected().map(|i| i.saturating_sub(1)).unwrap_or(0);
+                        state.select(Some(prev));
+                    }
+                    KeyCode::Home | KeyCode::Char('g') => state.select(Some(0)),
+                    KeyCode::End | KeyCode::Char('G') => {
+                        state.select(Some(visible.len().saturating_sub(1)));
+                    }
+                    KeyCode::Char('y') => {
+                        if let Some(i) = state.selected() {
+                            if let Some(e) = visible.get(i) {
+                                let text = entry_to_clipboard(e);
+                                if let Ok(mut ctx) = cli_clipboard::ClipboardContext::new() {
+                                    let _ = ctx.set_contents(text);
+                                    copied_at = Some(Instant::now());
+                                }
                             }
                         }
                     }
-                }
-                _ => {}
+                    _ => {}
+                },
             }
         }
     }
     Ok(())
+}
+
+fn render_plain(orig_path: &str, mod_path: &str, entries: &[&DiffEntry]) -> String {
+    use std::fmt::Write;
+    let mut buf = String::new();
+    writeln!(buf, "RustPEek Export").unwrap();
+    writeln!(buf, "Original : {orig_path}").unwrap();
+    writeln!(buf, "Modified : {mod_path}").unwrap();
+    writeln!(buf, "Total Diffs: {}", entries.len()).unwrap();
+    writeln!(buf).unwrap();
+    if entries.is_empty() {
+        writeln!(buf, "No differences found.").unwrap();
+        return buf;
+    }
+    let col_orig = entries.iter().map(|e| fmt_bytes(&e.original_bytes).len()).max().unwrap_or(14).max(14);
+    let col_mod  = entries.iter().map(|e| fmt_bytes(&e.modified_bytes).len()).max().unwrap_or(14).max(14);
+    let col_sec  = entries.iter().map(|e| fmt_section(e).len()).max().unwrap_or(7).max(7);
+    let header = format!(
+        "{:<10}   {:<14}   {:<13}   {:<orig$}   {:<modb$}   {:<sec$}",
+        "RVA", "VA", "File Offset", "Original Bytes", "Modified Bytes", "Section",
+        orig = col_orig, modb = col_mod, sec = col_sec
+    );
+    writeln!(buf, "{header}").unwrap();
+    writeln!(buf, "{}", "-".repeat(header.len())).unwrap();
+    for e in entries {
+        writeln!(
+            buf,
+            "{:<10}   {:<14}   {:<13}   {:<orig$}   {:<modb$}   {:<sec$}",
+            format!("{:08X}", e.rva), format!("{:012X}", e.va), format!("{:08X}", e.file_offset),
+            fmt_bytes(&e.original_bytes), fmt_bytes(&e.modified_bytes), fmt_section(e),
+            orig = col_orig, modb = col_mod, sec = col_sec
+        ).unwrap();
+    }
+    buf
 }
 
 pub fn to_csv(entries: &[DiffEntry]) -> String {
