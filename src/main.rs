@@ -30,6 +30,9 @@ struct Cli {
 
     #[arg(long, short = 'i', num_args = 1..)]
     ignore_section: Vec<String>,
+
+    #[arg(long)]
+    diff_only_headers: bool,
 }
 
 fn main() -> Result<()> {
@@ -37,6 +40,13 @@ fn main() -> Result<()> {
 
     let orig  = pe_parser::load(&cli.original)?;
     let modif = pe_parser::load(&cli.modified)?;
+
+    if let Some(pdb) = &orig.pdb_path {
+        eprintln!("[!]  Original PE has embedded PDB: {}", pdb);
+    }
+    if let Some(pdb) = &modif.pdb_path {
+        eprintln!("[!]  Modified PE has embedded PDB: {}", pdb);
+    }
 
     if orig.raw_data.len() != modif.raw_data.len() {
         eprintln!(
@@ -46,7 +56,7 @@ fn main() -> Result<()> {
         );
     }
 
-    let mut entries = differ::compare(&orig, &modif, cli.context);
+    let mut entries = differ::compare(&orig, &modif, cli.context, cli.diff_only_headers);
 
     if let Some(ref sec) = cli.section {
         entries.retain(|e| e.section_name.eq_ignore_ascii_case(sec));
@@ -109,11 +119,13 @@ fn plain_to_string(orig: &str, modif: &str, entries: &[differ::DiffEntry], buf: 
     let col_orig = entries.iter().map(|e| output::fmt_bytes(&e.original_bytes).len()).max().unwrap_or(14).max(14);
     let col_mod  = entries.iter().map(|e| output::fmt_bytes(&e.modified_bytes).len()).max().unwrap_or(14).max(14);
     let col_sec  = entries.iter().map(|e| output::fmt_section(e).len()).max().unwrap_or(7).max(7);
+    let col_pat  = entries.iter().map(|e| e.pattern_label.as_deref().unwrap_or("none").len()).max().unwrap_or(8).max(8);
+    let col_ent  = 10;
 
     let header = format!(
-        "{:<10}   {:<14}   {:<13}   {:<orig$}   {:<modb$}   {:<sec$}",
-        "RVA", "VA", "File Offset", "Original Bytes", "Modified Bytes", "Section",
-        orig = col_orig, modb = col_mod, sec = col_sec
+        "{:<10}   {:<14}   {:<13}   {:<orig$}   {:<modb$}   {:<sec$}   {:<pat$}   {:<ent$}",
+        "RVA", "VA", "File Offset", "Original Bytes", "Modified Bytes", "Section", "Pattern", "Entropy Δ",
+        orig = col_orig, modb = col_mod, sec = col_sec, pat = col_pat, ent = col_ent
     );
     writeln!(buf, "{header}").unwrap();
     writeln!(buf, "{}", "-".repeat(header.len())).unwrap();
@@ -121,14 +133,16 @@ fn plain_to_string(orig: &str, modif: &str, entries: &[differ::DiffEntry], buf: 
     for e in entries {
         writeln!(
             buf,
-            "{:<10}   {:<14}   {:<13}   {:<orig$}   {:<modb$}   {:<sec$}",
+            "{:<10}   {:<14}   {:<13}   {:<orig$}   {:<modb$}   {:<sec$}   {:<pat$}   {:>10.3}",
             format!("{:08X}", e.rva),
             format!("{:012X}", e.va),
             format!("{:08X}", e.file_offset),
             output::fmt_bytes(&e.original_bytes),
             output::fmt_bytes(&e.modified_bytes),
             output::fmt_section(e),
-            orig = col_orig, modb = col_mod, sec = col_sec
+            e.pattern_label.as_deref().unwrap_or("none"),
+            e.entropy_delta,
+            orig = col_orig, modb = col_mod, sec = col_sec, pat = col_pat
         ).unwrap();
     }
 }

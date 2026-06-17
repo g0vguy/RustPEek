@@ -8,7 +8,8 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
+    prelude::Widget, 
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
@@ -58,11 +59,15 @@ pub fn render_tui(orig_path: &str, mod_path: &str, entries: &[DiffEntry]) -> Res
 
 fn entry_to_clipboard(e: &DiffEntry) -> String {
     format!(
-        "{:08X}\t{:012X}\t{:08X}\t{}\t{}\t{}",
+        "{:08X}\t{:012X}\t{:08X}\t{}\t{}\t{}\t{:?}\t{:.3}\t{:.3}\t{:.3}",
         e.rva, e.va, e.file_offset,
         fmt_bytes(&e.original_bytes),
         fmt_bytes(&e.modified_bytes),
         fmt_section(e),
+        e.pattern_label,
+        e.entropy_original,
+        e.entropy_modified,
+        e.entropy_delta,
     )
 }
 
@@ -77,7 +82,7 @@ fn run_tui(
     let mut search = String::new();
     let mut export_path = String::new();
     let mut mode = InputMode::Normal;
-    let mut status: Option<(String, Instant, bool)> = None; // (msg, time, success)
+    let mut status: Option<(String, Instant, bool)> = None;
 
     let header_cells = ["RVA", "VA", "File Offset", "Original Bytes", "Modified Bytes", "Section"]
         .iter()
@@ -104,7 +109,8 @@ fn run_tui(
                 let sec = fmt_section(e).to_ascii_lowercase();
                 let orig_hex = fmt_bytes(&e.original_bytes).to_ascii_lowercase();
                 let mod_hex  = fmt_bytes(&e.modified_bytes).to_ascii_lowercase();
-                sec.contains(&needle) || orig_hex.contains(&needle) || mod_hex.contains(&needle)
+                let pat = e.pattern_label.as_deref().unwrap_or("").to_ascii_lowercase();
+                sec.contains(&needle) || orig_hex.contains(&needle) || mod_hex.contains(&needle) || pat.contains(&needle)
             })
             .collect();
 
@@ -128,9 +134,15 @@ fn run_tui(
 
         terminal.draw(|f| {
             let area = f.area();
+            // Layout: title bar (3), table (min), detail pane (8), status (1)
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(1)])
+                .constraints([
+                    Constraint::Length(3),
+                    Constraint::Min(0),
+                    Constraint::Length(8), 
+                    Constraint::Length(1),
+                ])
                 .split(area);
 
             let filter_info = if !needle.is_empty() {
@@ -150,12 +162,20 @@ fn run_tui(
                 " RustPEek ",
                 Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
             )));
+            f.render_widget(title, chunks[0]);
 
             let table = Table::new(rows, widths)
                 .header(header.clone())
                 .block(Block::default().borders(Borders::ALL).title(" Diff Results "))
                 .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD))
                 .highlight_symbol("▶ ");
+            f.render_stateful_widget(table, chunks[1], state);
+
+            if let Some(sel) = state.selected() {
+                if let Some(entry) = visible.get(sel) {
+                    render_detail(chunks[2], entry, f.buffer_mut());
+                }
+            }
 
             let copied_visible = copied_at.map(|t| t.elapsed() < Duration::from_secs(2)).unwrap_or(false);
 
@@ -204,10 +224,7 @@ fn run_tui(
                     ]))
                 }
             };
-
-            f.render_widget(title, chunks[0]);
-            f.render_stateful_widget(table, chunks[1], state);
-            f.render_widget(help, chunks[2]);
+            f.render_widget(help, chunks[3]);
         })?;
 
         if let Event::Key(key) = event::read()? {
@@ -296,6 +313,83 @@ fn run_tui(
     Ok(())
 }
 
+fn render_detail(area: Rect, entry: &DiffEntry, buf: &mut ratatui::buffer::Buffer) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(2), Constraint::Min(0)])
+        .split(area);
+
+    let pattern = entry.pattern_label.as_deref().unwrap_or("none");
+    let entropy = entry.entropy_delta;
+    let header = format!(
+        " Pattern: {}   Entropy Δ: {:.3}   (orig: {:.3}  mod: {:.3})",
+        pattern, entropy, entry.entropy_original, entry.entropy_modified
+    );
+    Paragraph::new(header).style(Style::default().fg(Color::White)).render(chunks[0], buf);
+
+    let orig = &entry.original_bytes;
+    let modif = &entry.modified_bytes;
+    let max_len = orig.len().max(modif.len());
+    let mut lines = Vec::new();
+    for offset in (0..max_len).step_by(16) {
+        let mut orig_spans = Vec::new();
+        let mut mod_spans = Vec::new();
+
+        orig_spans.push(Span::styled(
+            format!("{:04X}  ", offset),
+            Style::default().fg(Color::DarkGray),
+        ));
+        for i in 0..16 {
+            let idx = offset + i;
+            if idx < orig.len() && idx < modif.len() {
+                let o = orig[idx];
+                let m = modif[idx];
+                let style = if o != m {
+                    Style::default().fg(Color::Red).bg(Color::Yellow)
+                } else {
+                    Style::default().fg(Color::Red)
+                };
+                orig_spans.push(Span::styled(format!("{:02X} ", o), style));
+            } else if idx < orig.len() {
+                orig_spans.push(Span::styled(format!("{:02X} ", orig[idx]), Style::default().fg(Color::Red)));
+            } else {
+                orig_spans.push(Span::raw("   "));
+            }
+        }
+
+        mod_spans.push(Span::styled(
+            format!("      "), 
+            Style::default().fg(Color::DarkGray),
+        ));
+        for i in 0..16 {
+            let idx = offset + i;
+            if idx < modif.len() && idx < orig.len() {
+                let o = orig[idx];
+                let m = modif[idx];
+                let style = if o != m {
+                    Style::default().fg(Color::Green).bg(Color::Yellow)
+                } else {
+                    Style::default().fg(Color::Green)
+                };
+                mod_spans.push(Span::styled(format!("{:02X} ", m), style));
+            } else if idx < modif.len() {
+                mod_spans.push(Span::styled(format!("{:02X} ", modif[idx]), Style::default().fg(Color::Green)));
+            } else {
+                mod_spans.push(Span::raw("   "));
+            }
+        }
+
+
+        lines.push(Line::from(orig_spans));
+        lines.push(Line::from(mod_spans));
+    }
+
+    let detail = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title(" Diff Detail "))
+        .style(Style::default().fg(Color::White));
+    detail.render(chunks[1], buf);
+}
+
 fn render_plain(orig_path: &str, mod_path: &str, entries: &[&DiffEntry]) -> String {
     use std::fmt::Write;
     let mut buf = String::new();
@@ -308,37 +402,49 @@ fn render_plain(orig_path: &str, mod_path: &str, entries: &[&DiffEntry]) -> Stri
         writeln!(buf, "No differences found.").unwrap();
         return buf;
     }
+
     let col_orig = entries.iter().map(|e| fmt_bytes(&e.original_bytes).len()).max().unwrap_or(14).max(14);
     let col_mod  = entries.iter().map(|e| fmt_bytes(&e.modified_bytes).len()).max().unwrap_or(14).max(14);
     let col_sec  = entries.iter().map(|e| fmt_section(e).len()).max().unwrap_or(7).max(7);
+    let col_pat  = entries.iter().map(|e| e.pattern_label.as_deref().unwrap_or("none").len()).max().unwrap_or(8).max(8);
+    let col_ent  = 10;
+
     let header = format!(
-        "{:<10}   {:<14}   {:<13}   {:<orig$}   {:<modb$}   {:<sec$}",
-        "RVA", "VA", "File Offset", "Original Bytes", "Modified Bytes", "Section",
-        orig = col_orig, modb = col_mod, sec = col_sec
+        "{:<10}   {:<14}   {:<13}   {:<orig$}   {:<modb$}   {:<sec$}   {:<pat$}   {:<ent$}",
+        "RVA", "VA", "File Offset", "Original Bytes", "Modified Bytes", "Section", "Pattern", "Entropy Δ",
+        orig = col_orig, modb = col_mod, sec = col_sec, pat = col_pat, ent = col_ent
     );
     writeln!(buf, "{header}").unwrap();
     writeln!(buf, "{}", "-".repeat(header.len())).unwrap();
     for e in entries {
         writeln!(
             buf,
-            "{:<10}   {:<14}   {:<13}   {:<orig$}   {:<modb$}   {:<sec$}",
-            format!("{:08X}", e.rva), format!("{:012X}", e.va), format!("{:08X}", e.file_offset),
-            fmt_bytes(&e.original_bytes), fmt_bytes(&e.modified_bytes), fmt_section(e),
-            orig = col_orig, modb = col_mod, sec = col_sec
+            "{:<10}   {:<14}   {:<13}   {:<orig$}   {:<modb$}   {:<sec$}   {:<pat$}   {:>10.3}",
+            format!("{:08X}", e.rva),
+            format!("{:012X}", e.va),
+            format!("{:08X}", e.file_offset),
+            fmt_bytes(&e.original_bytes),
+            fmt_bytes(&e.modified_bytes),
+            fmt_section(e),
+            e.pattern_label.as_deref().unwrap_or("none"),
+            e.entropy_delta,
+            orig = col_orig, modb = col_mod, sec = col_sec, pat = col_pat
         ).unwrap();
     }
     buf
 }
 
 pub fn to_csv(entries: &[DiffEntry]) -> String {
-    let mut out = String::from("\"RVA\",\"VA\",\"File Offset\",\"Original Bytes\",\"Modified Bytes\",\"Section\"\n");
+    let mut out = String::from("\"RVA\",\"VA\",\"File Offset\",\"Original Bytes\",\"Modified Bytes\",\"Section\",\"Pattern\",\"Entropy Delta\"\n");
     for e in entries {
         out.push_str(&format!(
-            "\"{:08X}\",\"{:012X}\",\"{:08X}\",\"{}\",\"{}\",\"{}\"\n",
+            "\"{:08X}\",\"{:012X}\",\"{:08X}\",\"{}\",\"{}\",\"{}\",\"{:?}\",\"{:.3}\"\n",
             e.rva, e.va, e.file_offset,
             fmt_bytes(&e.original_bytes),
             fmt_bytes(&e.modified_bytes),
             fmt_section(e),
+            e.pattern_label,
+            e.entropy_delta,
         ));
     }
     out
@@ -353,6 +459,8 @@ pub fn to_json(entries: &[DiffEntry]) -> Result<String> {
         original_bytes: String,
         modified_bytes: String,
         section: String,
+        pattern: Option<String>,
+        entropy_delta: f64,
     }
 
     let rows: Vec<Row> = entries
@@ -364,9 +472,10 @@ pub fn to_json(entries: &[DiffEntry]) -> Result<String> {
             original_bytes: fmt_bytes(&e.original_bytes),
             modified_bytes: fmt_bytes(&e.modified_bytes),
             section: fmt_section(e),
+            pattern: e.pattern_label.clone(),
+            entropy_delta: e.entropy_delta,
         })
         .collect();
 
     Ok(serde_json::to_string_pretty(&rows)?)
 }
-

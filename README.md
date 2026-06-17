@@ -1,6 +1,6 @@
-# RustPEek v0.2.0
+# RustPEek v0.3.0
 
-A CLI tool that compares two Windows PE files byte-by-byte and presents the diff in an interactive terminal UI. Each changed region is shown with its RVA, VA, file offset, raw bytes, and section name.
+A CLI tool that compares two Windows PE files byte‑by‑byte and presents the diff in an interactive terminal UI. Each changed region is shown with its RVA, VA, file offset, raw bytes, section name, **automatic patch pattern label**, **entropy delta**, and a **hex dump detail pane** with inline highlighting of changed bytes.
 
 ---
 
@@ -31,12 +31,13 @@ RustPEek <original> <modified> [OPTIONS]
 | `-b, --min-bytes <n>` | Only show diffs with ≥ N changed bytes |
 | `-c, --context <n>` | Show N bytes of context before/after each diff region |
 | `-i, --ignore-section <name>` | Exclude a section (repeatable, e.g. `.rsrc`) |
+| `--diff-only-headers` | Compare PE headers only (skip section raw data) |
 
 ---
 
 ## Interactive TUI
 
-Running without `--output` opens a full-screen terminal UI.
+Running without `--output` opens a full‑screen terminal UI.
 
 ```
 RustPEek original.exe patched.exe
@@ -44,7 +45,7 @@ RustPEek original.exe patched.exe
 
 ```
 ┌ RustPEek ──────────────────────────────────────────────────────────────────┐
-│  Original : original.exe   Modified : patched.exe   Diffs: 3               │
+│  Original : original.exe   Modified : patched.exe   Diffs: 3              │
 └────────────────────────────────────────────────────────────────────────────┘
 ┌ Diff Results ──────────────────────────────────────────────────────────────┐
 │ RVA          VA               File Offset    Original Bytes    Modified ... │
@@ -53,7 +54,12 @@ RustPEek original.exe patched.exe
 │  0144CA10    00018144CA10     0144BE10       74 05             90 90        │
 │  00A3F120    000180A3F120     00A3E520       8B 45 08 83 C0    B8 01 00 ... │
 └────────────────────────────────────────────────────────────────────────────┘
- ↑↓  navigate    /  search    y  copy row    q / Esc  quit
+┌ Diff Detail ───────────────────────────────────────────────────────────────┐
+│ Pattern: NOP sled   Entropy Δ: 0.012   (orig: 4.123  mod: 4.111)          │
+│ 0000  0F 84 28 0F 00 00 00 00 00 00 00 00 00 00 00 00                    │
+│      90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90                    │
+└────────────────────────────────────────────────────────────────────────────┘
+ ↑↓  navigate    /  search    y  copy row    e  export    q / Esc  quit
 ```
 
 ### Keybinds
@@ -64,16 +70,16 @@ RustPEek original.exe patched.exe
 | `↓` / `j` | Move down |
 | `g` / `Home` | Jump to first row |
 | `G` / `End` | Jump to last row |
-| `/` | Enter search mode — filter by section name or byte pattern |
-| `y` | Copy selected row to clipboard |
+| `/` | Enter search mode — filter by section name, byte pattern, or patch label |
+| `y` | Copy selected row to clipboard (includes all fields) |
 | `e` | Export current view to a file |
 | `q` / `Esc` | Quit |
 
 Pressing `e` opens an inline filename prompt. Type a path and press `Enter` to write the file. The format is inferred from the extension — `.json`, `.csv`, or plain text for anything else. `Esc` cancels. A `✓ Exported` or `✗ Export failed` flash confirms the result.
 
-Pressing `/` opens an inline search bar at the bottom. The table filters live as you type, matching against section name, original bytes, and modified bytes. The header shows `Filter: 'query' (n/total)`. `Enter` confirms and returns to normal navigation. `Esc` clears the filter.
+Pressing `/` opens an inline search bar. The table filters live as you type, matching against section name, original bytes, modified bytes, and the detected patch pattern. The header shows `Filter: 'query' (n/total)`. `Enter` confirms, `Esc` clears.
 
-Pressing `y` copies the selected row as tab-separated values — pastes cleanly into Excel, Notepad, or IDA.
+Pressing `y` copies the selected row as tab‑separated values (includes RVA, VA, offset, bytes, section, pattern, and entropy delta) — pastes cleanly into Excel, Notepad, or IDA.
 
 ---
 
@@ -109,6 +115,9 @@ RustPEek orig.exe patched.exe --context 8
 # Exclude noisy sections
 RustPEek orig.exe patched.exe --ignore-section .rsrc --ignore-section .reloc
 
+# Compare only headers (skip section data)
+RustPEek orig.exe patched.exe --diff-only-headers
+
 # Combine
 RustPEek orig.exe patched.exe --section .text --context 4 --ignore-section .reloc
 ```
@@ -124,7 +133,9 @@ RustPEek orig.exe patched.exe --section .text --context 4 --ignore-section .relo
 | File Offset | Raw byte offset from start of file | `0144BD9C` |
 | Original Bytes | Hex bytes from the original file | `0F 84 28 0F 00 00` |
 | Modified Bytes | Hex bytes from the modified file | `90 90 90 90 90 90` |
-| Section | 1-based index and name | `1\|.text` |
+| Section | 1‑based index and name | `1\|.text` |
+| Pattern | Detected patch pattern (if any) | `NOP sled`, `JMP near`, `RET` |
+| Entropy Δ | Absolute difference in Shannon entropy between original and modified diff bytes | `0.012` |
 
 Addresses outside any known section are shown as `?|unknown`.
 
@@ -136,33 +147,43 @@ When `--context <n>` is used, the bytes shown include N bytes before and after t
 
 ```
 src/
-├── main.rs       — CLI (clap v4), orchestration
-├── pe_parser.rs  — PE loading via goblin, section table extraction
+├── main.rs       — CLI (clap v4), orchestration, PDB hint display
+├── pe_parser.rs  — PE loading via goblin, section table extraction, PDB path parsing
 ├── address.rs    — FileOffset ↔ RVA ↔ VA conversions, section lookup
-├── differ.rs     — byte comparison, contiguous run grouping
-└── output.rs     — ratatui TUI, CSV, JSON formatters
+├── differ.rs     — byte comparison, contiguous run grouping, pattern detection, entropy calculation
+└── output.rs     — ratatui TUI (with detail pane), CSV, JSON formatters
 ```
 
 ## Supported PE Formats
 
-- PE32 (32-bit)
-- PE32+ / PE64 (64-bit)
+- PE32 (32‑bit)
+- PE32+ / PE64 (64‑bit)
+
+---
+
+## New in v0.3.0
+
+- **Patch pattern detection** – automatically labels common patterns like `NOP sled`, `JMP short/near`, `RET`, `RET imm`, etc.
+- **Hex dump detail pane** – split view in the TUI showing original and modified hex bytes side‑by‑side, with changed bytes highlighted in yellow.
+- **Entropy delta** – Shannon entropy of each diff region’s original and modified bytes; a large delta may suggest shellcode versus simple NOP padding.
+- **PDB hint** – if a PE contains an embedded PDB path (RSDS CodeView), it is printed to stderr when loading.
+- **`--diff-only-headers`** – compare only the PE headers (DOS header, NT headers, section headers) and skip raw section data; useful for quick structural checks.
+- All export formats (plain, CSV, JSON) now include the new `Pattern` and `Entropy Δ` columns.
 
 ---
 
 ## Roadmap
 
-### Diff Quality
-- ~~`--context <n>` — show N bytes before/after each diff region~~
-- ~~`--ignore-section <name>` — exclude noisy sections like `.rsrc` or `.reloc`~~
-- [ ] Patch pattern detection — automatically label common patterns (`NOP sled`, `JMP patch`, `ret stub`)
+- [x] `--context <n>` — show N bytes before/after each diff region
+- [x] `--ignore-section <name>` — exclude noisy sections
+- [x] `--diff-only-headers` — compare PE headers only
+- [x] Patch pattern detection (`NOP sled`, `JMP patch`, `ret stub`)
+- [x] Hex dump detail pane with changed bytes highlighted
+- [x] Entropy delta per diff region
+- [x] PDB hint on load
 
-### TUI
-- [ ] Hex dump detail pane — split view showing a hex dump of the selected region with changed bytes highlighted inline
-- ~~`/` search — filter rows by section name or byte pattern without leaving the TUI~~
-- ~~`e` export — save the current filtered view to a file from inside the TUI~~
+### Future Ideas
 
-### Analysis
-- [ ] Entropy delta per diff region — flags whether a patch looks like shellcode vs a simple NOP
-- [ ] PDB hint — if a PDB path is embedded in the PE, surface it so the user knows symbols are available
-- [ ] `--diff-only-headers` — compare PE headers only, skip section data
+- [ ] Signature‑based recognition for common malware patching techniques
+- [ ] Export diff as a binary patch file (`.patch`)
+- [ ] Integration with IDA / Ghidra via script output

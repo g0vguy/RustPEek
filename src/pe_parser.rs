@@ -16,6 +16,7 @@ pub struct PeInfo {
     pub image_base: u64,
     pub sections: Vec<SectionInfo>,
     pub raw_data: Vec<u8>,
+    pub pdb_path: Option<String>,
 }
 
 pub fn load(path: &str) -> Result<PeInfo> {
@@ -41,5 +42,18 @@ pub fn load(path: &str) -> Result<PeInfo> {
         })
         .collect();
 
-    Ok(PeInfo { image_base, sections, raw_data })
+    let pdb_path = extract_pdb_path(&raw_data, &pe);
+
+    Ok(PeInfo { image_base, sections, raw_data, pdb_path })
+}
+
+fn extract_pdb_path(_raw: &[u8], pe: &PE) -> Option<String> {
+    pe.debug_data
+        .as_ref()?
+        .codeview_pdb70_debug_info
+        .map(|cv| {
+            String::from_utf8_lossy(cv.filename)
+                .trim_end_matches('\0')
+                .to_string()
+        })
 }
