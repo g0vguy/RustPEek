@@ -1,7 +1,10 @@
 mod address;
 mod differ;
+mod disasm;
 mod output;
+mod patch;
 mod pe_parser;
+mod semantic;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -38,7 +41,7 @@ struct Cli {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let orig  = pe_parser::load(&cli.original)?;
+    let orig = pe_parser::load(&cli.original)?;
     let modif = pe_parser::load(&cli.modified)?;
 
     if let Some(pdb) = &orig.pdb_path {
@@ -68,6 +71,9 @@ fn main() -> Result<()> {
         entries.retain(|e| e.original_bytes.len() >= min);
     }
 
+    // Compute semantic diff (always needed for TUI and JSON/CSV export)
+    let semantic = semantic::analyze_semantic(&orig, &modif);
+
     match cli.format.as_str() {
         "csv" => {
             let data = output::to_csv(&entries);
@@ -84,7 +90,14 @@ fn main() -> Result<()> {
                 fs::write(path, &buf).with_context(|| format!("cannot write to '{path}'"))?;
                 println!("Report written to '{path}' ({} entries).", entries.len());
             } else {
-                output::render_tui(&cli.original, &cli.modified, &entries)?;
+                output::render_tui(
+                    &cli.original,
+                    &cli.modified,
+                    &entries,
+                    orig.is_64bit,
+                    &semantic,
+                    &orig.raw_data,
+                )?;
             }
         }
     }
@@ -116,16 +129,47 @@ fn plain_to_string(orig: &str, modif: &str, entries: &[differ::DiffEntry], buf: 
         return;
     }
 
-    let col_orig = entries.iter().map(|e| output::fmt_bytes(&e.original_bytes).len()).max().unwrap_or(14).max(14);
-    let col_mod  = entries.iter().map(|e| output::fmt_bytes(&e.modified_bytes).len()).max().unwrap_or(14).max(14);
-    let col_sec  = entries.iter().map(|e| output::fmt_section(e).len()).max().unwrap_or(7).max(7);
-    let col_pat  = entries.iter().map(|e| e.pattern_label.as_deref().unwrap_or("none").len()).max().unwrap_or(8).max(8);
-    let col_ent  = 10;
+    let col_orig = entries
+        .iter()
+        .map(|e| output::fmt_bytes(&e.original_bytes).len())
+        .max()
+        .unwrap_or(14)
+        .max(14);
+    let col_mod = entries
+        .iter()
+        .map(|e| output::fmt_bytes(&e.modified_bytes).len())
+        .max()
+        .unwrap_or(14)
+        .max(14);
+    let col_sec = entries
+        .iter()
+        .map(|e| output::fmt_section(e).len())
+        .max()
+        .unwrap_or(7)
+        .max(7);
+    let col_pat = entries
+        .iter()
+        .map(|e| e.pattern_label.as_deref().unwrap_or("none").len())
+        .max()
+        .unwrap_or(8)
+        .max(8);
+    let col_ent = 10;
 
     let header = format!(
         "{:<10}   {:<14}   {:<13}   {:<orig$}   {:<modb$}   {:<sec$}   {:<pat$}   {:<ent$}",
-        "RVA", "VA", "File Offset", "Original Bytes", "Modified Bytes", "Section", "Pattern", "Entropy Δ",
-        orig = col_orig, modb = col_mod, sec = col_sec, pat = col_pat, ent = col_ent
+        "RVA",
+        "VA",
+        "File Offset",
+        "Original Bytes",
+        "Modified Bytes",
+        "Section",
+        "Pattern",
+        "Entropy Δ",
+        orig = col_orig,
+        modb = col_mod,
+        sec = col_sec,
+        pat = col_pat,
+        ent = col_ent
     );
     writeln!(buf, "{header}").unwrap();
     writeln!(buf, "{}", "-".repeat(header.len())).unwrap();
@@ -142,7 +186,11 @@ fn plain_to_string(orig: &str, modif: &str, entries: &[differ::DiffEntry], buf: 
             output::fmt_section(e),
             e.pattern_label.as_deref().unwrap_or("none"),
             e.entropy_delta,
-            orig = col_orig, modb = col_mod, sec = col_sec, pat = col_pat
-        ).unwrap();
+            orig = col_orig,
+            modb = col_mod,
+            sec = col_sec,
+            pat = col_pat
+        )
+        .unwrap();
     }
 }

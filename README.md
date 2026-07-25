@@ -1,6 +1,6 @@
-# RustPEek v0.3.0
+# RustPEek v0.4.0
 
-A CLI tool that compares two Windows PE files byte‑by‑byte and presents the diff in an interactive terminal UI. Each changed region is shown with its RVA, VA, file offset, raw bytes, section name, **automatic patch pattern label**, **entropy delta**, and a **hex dump detail pane** with inline highlighting of changed bytes.
+A CLI tool that compares two Windows PE files byte‑by‑byte and presents the diff in an interactive terminal UI. Each changed region is shown with its RVA, VA, file offset, raw bytes, section name, **automatic patch pattern label**, **entropy delta**, a **hex dump detail pane**, **inline disassembly**, and a **semantic diff view** for imports, exports, and resources. Diffs can be exported as `.rpk` or `.ips` binary patch files and applied to other files.
 
 ---
 
@@ -21,7 +21,10 @@ cargo build --release
 
 ```
 RustPEek <original> <modified> [OPTIONS]
+RustPEek apply <patch> <target> <output> [--force]
 ```
+
+### Diff flags
 
 | Flag | Description |
 |------|-------------|
@@ -49,17 +52,19 @@ RustPEek original.exe patched.exe
 └────────────────────────────────────────────────────────────────────────────┘
 ┌ Diff Results ──────────────────────────────────────────────────────────────┐
 │ RVA          VA               File Offset    Original Bytes    Modified ... │
-│─────────────────────────────────────────────────────────────────────────── │
 │▶ 0144C99C    00018144C99C     0144BD9C       0F 84 28 0F 00    90 90 90 ... │
 │  0144CA10    00018144CA10     0144BE10       74 05             90 90        │
 │  00A3F120    000180A3F120     00A3E520       8B 45 08 83 C0    B8 01 00 ... │
 └────────────────────────────────────────────────────────────────────────────┘
 ┌ Diff Detail ───────────────────────────────────────────────────────────────┐
-│ Pattern: NOP sled   Entropy Δ: 0.012   (orig: 4.123  mod: 4.111)          │
-│ 0000  0F 84 28 0F 00 00 00 00 00 00 00 00 00 00 00 00                    │
-│      90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90                    │
+│ Pattern: NOP sled   Entropy Δ: 0.012   orig: 4.123  mod: 4.111            │
+│ 0000  0F 84 28 0F 00 00 00 00 00 00 00 00 00 00 00 00                     │
+│       90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90                     │
 └────────────────────────────────────────────────────────────────────────────┘
- ↑↓  navigate    /  search    y  copy row    e  export    q / Esc  quit
+┌ Disassembly ───────────────────────────────────────────────────────────────┐
+│ 00018144C99C  jz 0x18144d8cah                  │ nop                       │
+└────────────────────────────────────────────────────────────────────────────┘
+ ↑↓ navigate    / search    y copy    d disasm    e export    p patch    Tab semantic    q / Esc quit
 ```
 
 ### Keybinds
@@ -71,15 +76,101 @@ RustPEek original.exe patched.exe
 | `g` / `Home` | Jump to first row |
 | `G` / `End` | Jump to last row |
 | `/` | Enter search mode — filter by section name, byte pattern, or patch label |
-| `y` | Copy selected row to clipboard (includes all fields) |
-| `e` | Export current view to a file |
+| `y` | Copy selected row to clipboard (tab-separated, pastes into Excel / IDA) |
+| `d` | Toggle the disassembly pane on/off |
+| `e` | Export current view to a file (`.json`, `.csv`, or plain text) |
+| `p` | Export current diff as a binary patch file (`.rpk` or `.ips`) |
+| `Tab` | Toggle between Byte Diff view and Semantic Diff view |
 | `q` / `Esc` | Quit |
 
-Pressing `e` opens an inline filename prompt. Type a path and press `Enter` to write the file. The format is inferred from the extension — `.json`, `.csv`, or plain text for anything else. `Esc` cancels. A `✓ Exported` or `✗ Export failed` flash confirms the result.
 
-Pressing `/` opens an inline search bar. The table filters live as you type, matching against section name, original bytes, modified bytes, and the detected patch pattern. The header shows `Filter: 'query' (n/total)`. `Enter` confirms, `Esc` clears.
+---
 
-Pressing `y` copies the selected row as tab‑separated values (includes RVA, VA, offset, bytes, section, pattern, and entropy delta) — pastes cleanly into Excel, Notepad, or IDA.
+## Disassembly Pane
+
+The disassembly pane shows the decoded instructions for the selected diff region side‑by‑side:
+
+```
+┌ Disassembly ───────────────────────────────────────────────┐
+│ 00018144C99C  jz 0x18144d8cah    │ nop                     │  ← yellow (changed)
+│ 00018144C9A2  xor eax,eax        │ xor eax,eax             │  ← gray (unchanged)
+└────────────────────────────────────────────────────────────┘
+```
+
+- Changed instructions are highlighted in **yellow**
+- Unchanged instructions are shown in **dim gray**
+- Uses NASM syntax via `iced-x86`
+- Press `d` to hide/show the pane
+
+---
+
+## Semantic Diff View
+
+Press `Tab` to switch to the Semantic Diff view, which compares PE structures rather than raw bytes:
+
+```
+┌ Semantic Changes ──────────────────────────────────────────┐
+│ Category   Change       Detail                             │
+│ Import     Added        kernel32.dll!VirtualAlloc          │
+│ Import     Removed      advapi32.dll!RegOpenKeyExW         │
+│ Export     Forwarded    ord=5 -> ntdll.RtlGetVersion       │
+│ Resource   Modified     RT_MANIFEST changed                │
+└────────────────────────────────────────────────────────────┘
+```
+
+Detects:
+- **Imports** added or removed
+- **Exports** added, removed, or newly forwarded
+- **Resources** added, removed, or changed in size
+- `RT_MANIFEST` and `RT_VERSION` changes flagged specifically
+
+---
+
+## Binary Patch Export & Apply
+
+### Export from TUI
+Press `p` in the TUI to export the current diff as a patch file.
+
+### Export from CLI
+```bash
+# RPK patch (JSON)
+RustPEek orig.exe patched.exe --format patch --output fix.rpk
+
+# IPS patch
+RustPEek orig.exe patched.exe --format patch --output fix.ips
+```
+
+### Apply a patch
+```bash
+RustPEek apply fix.rpk target.exe output.exe
+
+# Skip SHA-256 verification
+RustPEek apply fix.rpk target.exe output.exe --force
+```
+
+The `apply` subcommand:
+1. Verifies `sha256(target)` matches the patch's recorded hash (unless `--force`)
+2. Verifies each patch entry's original bytes match the target at the given offset
+3. Applies all patches and writes the result to `output`
+4. Prints `Patched: target.exe -> output.exe (N changes applied)`
+
+### RPK format
+```json
+{
+  "version": 1,
+  "target_filename": "IDMan.exe",
+  "target_size": 12345678,
+  "target_sha256": "abc123...",
+  "patches": [
+    {
+      "file_offset": 315296,
+      "original_bytes": [131, 224, 15, 131, 192, 15],
+      "patched_bytes": [184, 255, 255, 255, 127, 144],
+      "description": "NOP sled"
+    }
+  ]
+}
+```
 
 ---
 
@@ -147,28 +238,20 @@ When `--context <n>` is used, the bytes shown include N bytes before and after t
 
 ```
 src/
-├── main.rs       — CLI (clap v4), orchestration, PDB hint display
-├── pe_parser.rs  — PE loading via goblin, section table extraction, PDB path parsing
+├── main.rs       — CLI (clap v4), orchestration, PDB hint display, apply subcommand
+├── pe_parser.rs  — PE loading via goblin, section table, imports, exports, PDB path, is_64bit
 ├── address.rs    — FileOffset ↔ RVA ↔ VA conversions, section lookup
 ├── differ.rs     — byte comparison, contiguous run grouping, pattern detection, entropy calculation
-└── output.rs     — ratatui TUI (with detail pane), CSV, JSON formatters
+├── disasm.rs     — inline disassembly via iced-x86, VA-aligned orig/mod instruction pairing
+├── semantic.rs   — import/export/resource structural diffing via goblin + pelite
+├── patch.rs      — RPK and IPS patch format, export_patch(), apply_patch()
+└── output.rs     — ratatui TUI, CSV/JSON formatters
 ```
 
 ## Supported PE Formats
 
 - PE32 (32‑bit)
 - PE32+ / PE64 (64‑bit)
-
----
-
-## New in v0.3.0
-
-- **Patch pattern detection** – automatically labels common patterns like `NOP sled`, `JMP short/near`, `RET`, `RET imm`, etc.
-- **Hex dump detail pane** – split view in the TUI showing original and modified hex bytes side‑by‑side, with changed bytes highlighted in yellow.
-- **Entropy delta** – Shannon entropy of each diff region’s original and modified bytes; a large delta may suggest shellcode versus simple NOP padding.
-- **PDB hint** – if a PE contains an embedded PDB path (RSDS CodeView), it is printed to stderr when loading.
-- **`--diff-only-headers`** – compare only the PE headers (DOS header, NT headers, section headers) and skip raw section data; useful for quick structural checks.
-- All export formats (plain, CSV, JSON) now include the new `Pattern` and `Entropy Δ` columns.
 
 ---
 
@@ -181,9 +264,13 @@ src/
 - [x] Hex dump detail pane with changed bytes highlighted
 - [x] Entropy delta per diff region
 - [x] PDB hint on load
+- [x] Inline disassembly pane (iced-x86, NASM syntax, `d` to toggle)
+- [x] Semantic diff view — imports, exports, resources (`Tab` to toggle)
+- [x] Binary patch export — `.rpk` JSON and `.ips` IPS formats (`p` keybind)
+- [x] `apply` subcommand — apply `.rpk` patch with SHA-256 + byte verification
 
 ### Future Ideas
 
-- [ ] Signature‑based recognition for common malware patching techniques
-- [ ] Export diff as a binary patch file (`.patch`)
+- [ ] Wire `apply` subcommand into `main.rs` CLI
 - [ ] Integration with IDA / Ghidra via script output
+- [ ] Scrolling in the disassembly and detail panes
