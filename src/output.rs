@@ -86,14 +86,14 @@ pub fn render_tui(
 
 fn entry_to_clipboard(e: &DiffEntry) -> String {
     format!(
-        "{:08X}\t{:012X}\t{:08X}\t{}\t{}\t{}\t{:?}\t{:.3}\t{:.3}\t{:.3}",
+        "{:08X}\t{:012X}\t{:08X}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}",
         e.rva,
         e.va,
         e.file_offset,
         fmt_bytes(&e.original_bytes),
         fmt_bytes(&e.modified_bytes),
         fmt_section(e),
-        e.pattern_label,
+        e.pattern_label.as_deref().unwrap_or(""),
         e.entropy_original,
         e.entropy_modified,
         e.entropy_delta,
@@ -826,7 +826,7 @@ pub fn to_csv(entries: &[DiffEntry]) -> String {
             fmt_bytes(&e.original_bytes),
             fmt_bytes(&e.modified_bytes),
             fmt_section(e),
-            e.pattern_label,
+            e.pattern_label.as_deref().unwrap_or(""),
             e.entropy_delta,
         ));
     }

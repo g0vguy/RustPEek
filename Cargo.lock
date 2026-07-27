@@ -13,7 +13,6 @@ dependencies = [
  "goblin",
  "hex",
  "iced-x86",
- "lazy_static",
  "pelite",
  "ratatui",
  "serde",

@@ -9,10 +9,11 @@ mod semantic;
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::fs;
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(name = "RustPEek", version, about = "Compare two PE files and report byte-level differences")]
-struct Cli {
+struct DiffCli {
     original: String,
     modified: String,
 
@@ -38,9 +39,32 @@ struct Cli {
     diff_only_headers: bool,
 }
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
+#[derive(Parser, Debug)]
+#[command(name = "apply", about = "Apply an RPK patch to a target file")]
+struct ApplyCli {
+    patch: String,
+    target: String,
+    output: String,
 
+    #[arg(long)]
+    force: bool,
+}
+
+fn main() -> Result<()> {
+    // Manually inspect argv so `apply` can be a subcommand while the default
+    // (no subcommand) keeps the original `RustPEek <orig> <mod>` interface.
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 && args[1] == "apply" {
+        let mut clap_rest = vec![args[0].clone()]; // binary name
+        clap_rest.extend_from_slice(&args[2..]);
+        let cli = ApplyCli::parse_from(clap_rest);
+        return apply_main(&cli);
+    }
+    let cli = DiffCli::parse();
+    diff_main(&cli)
+}
+
+fn diff_main(cli: &DiffCli) -> Result<()> {
     let orig = pe_parser::load(&cli.original)?;
     let modif = pe_parser::load(&cli.modified)?;
 
@@ -71,7 +95,6 @@ fn main() -> Result<()> {
         entries.retain(|e| e.original_bytes.len() >= min);
     }
 
-    // Compute semantic diff (always needed for TUI and JSON/CSV export)
     let semantic = semantic::analyze_semantic(&orig, &modif);
 
     match cli.format.as_str() {
@@ -82,6 +105,31 @@ fn main() -> Result<()> {
         "json" => {
             let data = output::to_json(&entries)?;
             write_or_print(&cli.output, &data, entries.len())?;
+        }
+        "patch" => {
+            let out_path = cli
+                .output
+                .as_ref()
+                .context("--output is required for 'patch' format")?;
+            let patch_entries: Vec<&differ::DiffEntry> = entries.iter().collect();
+            if out_path.ends_with(".ips") {
+                let bytes = patch::to_ips(&patch_entries);
+                fs::write(out_path, &bytes)
+                    .with_context(|| format!("cannot write to '{out_path}'"))?;
+                println!(
+                    "IPS patch written to '{out_path}' ({} entries).",
+                    patch_entries.len()
+                );
+            } else {
+                let rp = patch::export_patch(&cli.original, &orig.raw_data, &patch_entries);
+                let json = serde_json::to_string_pretty(&rp)?;
+                fs::write(out_path, &json)
+                    .with_context(|| format!("cannot write to '{out_path}'"))?;
+                println!(
+                    "RPK patch written to '{out_path}' ({} entries).",
+                    patch_entries.len()
+                );
+            }
         }
         _ => {
             if let Some(ref path) = cli.output {
@@ -102,6 +150,20 @@ fn main() -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn apply_main(cli: &ApplyCli) -> Result<()> {
+    let patch_path = PathBuf::from(&cli.patch);
+    let target_path = PathBuf::from(&cli.target);
+    let output_path = PathBuf::from(&cli.output);
+
+    let count = patch::apply_patch(&patch_path, &target_path, &output_path, cli.force)?;
+
+    println!(
+        "Patched: {} -> {} ({} changes applied).",
+        cli.target, cli.output, count
+    );
     Ok(())
 }
 

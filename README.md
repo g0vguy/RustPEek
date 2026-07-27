@@ -28,7 +28,7 @@ RustPEek apply <patch> <target> <output> [--force]
 
 | Flag | Description |
 |------|-------------|
-| `-f, --format <table\|csv\|json>` | Output format (default: `table`) |
+| `-f, --format <table|csv|json|patch>` | Output format (default: `table`) |
 | `-o, --output <file>` | Write report to a file instead of opening the TUI |
 | `-s, --section <name>` | Filter to a specific section, e.g. `.text` |
 | `-b, --min-bytes <n>` | Only show diffs with ≥ N changed bytes |
@@ -244,7 +244,7 @@ src/
 ├── differ.rs     — byte comparison, contiguous run grouping, pattern detection, entropy calculation
 ├── disasm.rs     — inline disassembly via iced-x86, VA-aligned orig/mod instruction pairing
 ├── semantic.rs   — import/export/resource structural diffing via goblin + pelite
-├── patch.rs      — RPK and IPS patch format, export_patch(), apply_patch()
+├── patch.rs      — RPK and IPS patch format, export_patch(), apply_patch(), to_ips()
 └── output.rs     — ratatui TUI, CSV/JSON formatters
 ```
 
@@ -267,10 +267,10 @@ src/
 - [x] Inline disassembly pane (iced-x86, NASM syntax, `d` to toggle)
 - [x] Semantic diff view — imports, exports, resources (`Tab` to toggle)
 - [x] Binary patch export — `.rpk` JSON and `.ips` IPS formats (`p` keybind)
-- [x] `apply` subcommand — apply `.rpk` patch with SHA-256 + byte verification
+- [x] `--format patch` CLI export for RPK and IPS
+- [x] `RustPEek apply` — apply `.rpk` patches with SHA-256 + byte verification
 
 ### Future Ideas
 
-- [ ] Wire `apply` subcommand into `main.rs` CLI
 - [ ] Integration with IDA / Ghidra via script output
 - [ ] Scrolling in the disassembly and detail panes

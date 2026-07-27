@@ -20,4 +20,3 @@ cli-clipboard = "0.4"
 iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "nasm"] }
 sha2 = "0.10"
 pelite = "0.10"
-lazy_static = "1.4"

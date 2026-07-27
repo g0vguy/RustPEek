@@ -37,7 +37,6 @@ pub fn export_patch(
     let patches = entries
         .iter()
         .map(|e| {
-            // Strip context: only the actual changed bytes
             let start = e.context_before;
             let end = e.original_bytes.len() - e.context_after;
             PatchEntry {
@@ -121,15 +120,35 @@ pub fn to_ips(entries: &[&crate::differ::DiffEntry]) -> Vec<u8> {
         let end = e.original_bytes.len() - e.context_after;
         let patched = &e.modified_bytes[start..end];
         let offset = e.file_offset as usize;
+        let total = patched.len();
 
-        // IPS: 3-byte big-endian offset, 2-byte big-endian size, data
-        out.push(((offset >> 16) & 0xFF) as u8);
-        out.push(((offset >> 8) & 0xFF) as u8);
-        out.push((offset & 0xFF) as u8);
-        let size = patched.len().min(0xFFFF);
-        out.push(((size >> 8) & 0xFF) as u8);
-        out.push((size & 0xFF) as u8);
-        out.extend_from_slice(&patched[..size]);
+        let mut written = 0;
+        while written < total {
+            let chunk_end = (written + 0xFFFF).min(total);
+            let chunk = &patched[written..chunk_end];
+            let chunk_offset = offset + written;
+
+            if chunk_offset > 0xFFFFFF {
+                // RUP extension: write EOE (0x454F45) marker, 4-byte offset, 2-byte size, data
+                out.extend_from_slice(b"EOE");
+                out.push(((chunk_offset >> 24) & 0xFF) as u8);
+                out.push(((chunk_offset >> 16) & 0xFF) as u8);
+                out.push(((chunk_offset >> 8) & 0xFF) as u8);
+                out.push((chunk_offset & 0xFF) as u8);
+            } else {
+                // Standard IPS: 3-byte big-endian offset
+                out.push(((chunk_offset >> 16) & 0xFF) as u8);
+                out.push(((chunk_offset >> 8) & 0xFF) as u8);
+                out.push((chunk_offset & 0xFF) as u8);
+            }
+
+            let size = chunk.len();
+            out.push(((size >> 8) & 0xFF) as u8);
+            out.push((size & 0xFF) as u8);
+            out.extend_from_slice(chunk);
+
+            written += chunk.len();
+        }
     }
     out.extend_from_slice(b"EOF");
     out

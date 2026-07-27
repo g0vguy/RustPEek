@@ -85,9 +85,7 @@ impl SemanticDiff {
             .collect()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.imports.is_empty() && self.exports.is_empty() && self.resources.is_empty()
-    }
+
 }
 
 pub fn analyze_semantic(orig: &PeInfo, modif: &PeInfo) -> SemanticDiff {

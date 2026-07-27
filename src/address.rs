@@ -1,13 +1,16 @@
 use crate::pe_parser::SectionInfo;
 
 pub fn file_offset_to_rva(offset: u64, sections: &[SectionInfo]) -> Option<u64> {
-    sections.iter().find_map(|s| {
+    for s in sections {
         if s.raw_size > 0 && offset >= s.raw_offset && offset < s.raw_offset + s.raw_size {
-            Some(s.virtual_address + (offset - s.raw_offset))
-        } else {
-            None
+            return Some(s.virtual_address + (offset - s.raw_offset));
         }
-    })
+    }
+
+    if offset < sections.iter().map(|s| s.raw_offset).min().unwrap_or(u64::MAX) {
+        return Some(offset);
+    }
+    None
 }
 
 pub fn rva_to_va(rva: u64, image_base: u64) -> u64 {
